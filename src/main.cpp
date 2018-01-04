@@ -65,6 +65,37 @@ Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
   return result;
 }
 
+Eigen::VectorXd to_eigen(vector<double> vec) {
+  Eigen::VectorXd eigen(vec.size());
+  int i = 0;
+  for (auto value : vec) eigen[i++] = value;
+  return eigen;
+}
+
+void GlobalToCar(vector<double>& ptsx,
+                 vector<double>& ptsy,
+                 double xshift,
+                 double yshift,
+                 double psi)
+{
+  // This is based on driveWell's post at:
+  // https://discussions.udacity.com/t/not-able-to-display-trajectory-and-reference-paths-in-the-simulator/248545/9
+  for (size_t i = 0; i < ptsx.size(); ++i)
+  {
+    const double& x = ptsx[i];
+    const double& y = ptsy[i];
+    double cospsi = cos(psi);
+    double sinpsi = sin(psi);
+    double xtrans = x - xshift;
+    double ytrans = y - yshift;
+    double xnew = xtrans * cospsi + ytrans * sinpsi;
+    double ynew = -xtrans * sinpsi + ytrans * cospsi;
+
+    ptsx[i] = xnew;
+    ptsy[i] = ynew;
+  }
+}
+
 int main() {
   uWS::Hub h;
 
@@ -92,14 +123,32 @@ int main() {
           double psi = j[1]["psi"];
           double v = j[1]["speed"];
 
+          GlobalToCar(ptsx, ptsy, px, py, psi);
+
+          Eigen::VectorXd poly = polyfit(to_eigen(ptsx), to_eigen(ptsy), 3);
+
+          double epsi = -atan(poly[1]);
+
+          // Car position is 0, 0, so position error is polynom evaluation at point 0
+          double cte = polyeval(poly, 0);
+
           /*
           * TODO: Calculate steering angle and throttle using MPC.
           *
           * Both are in between [-1, 1].
           *
           */
-          double steer_value;
-          double throttle_value;
+
+          Eigen::VectorXd state(6);
+          state << 0, 0, 0, v, cte, epsi;
+
+          std::cout << "State " << state << std::endl;
+          std::cout << "Poly " << poly << std::endl;
+
+          auto actuators = mpc.Solve(state, poly);
+
+          double steer_value = actuators[0];
+          double throttle_value = actuators[1];
 
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.

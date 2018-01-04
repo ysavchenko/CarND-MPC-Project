@@ -5,9 +5,34 @@
 
 using CppAD::AD;
 
+const int VAR_X = 0;
+const int VAR_Y = 1;
+const int VAR_PSI = 2;
+const int VAR_V = 3;
+const int VAR_CTE = 4;
+const int VAR_EPSI = 5;
+const int VAR_DELTA = 6;
+const int VAR_A = 7;
+std::vector<int> STATE_VARS = { VAR_X, VAR_Y, VAR_PSI, VAR_V, VAR_CTE, VAR_EPSI };
+std::vector<int> ALL_VARS = { VAR_X, VAR_Y, VAR_PSI, VAR_V, VAR_CTE, VAR_EPSI, VAR_DELTA, VAR_A };
+
+const double MAX_SPEED = 100;
+const double AVG_SPEED = 30;
+const double MAX_STEERING = 25. * M_PI / 180.;
+
 // TODO: Set the timestep length and duration
-size_t N = 0;
-double dt = 0;
+size_t N = 10;
+double dt = 0.1;
+
+// Return index of particular variable in array
+int var_index(int type, int timestep) {
+  int index = type * N + timestep;
+  if (type == VAR_A) index -= 1;  // We use -1 here because variable before acceleration (delta) has N-1 steps
+  return index;
+}
+int var_index(int type) {
+  return var_index(type, 0);
+}
 
 // This value assumes the model presented in the classroom is used.
 //
@@ -33,6 +58,70 @@ class FG_eval {
     // `fg` a vector of the cost constraints, `vars` is a vector of variable values (state & actuators)
     // NOTE: You'll probably go back and forth between this function and
     // the Solver function below.
+
+    // Now we'll fill fg vector. It should contain the following:
+    // fg[0] = f(x), which is the function we're uptimizing (cost)
+    // and for i=0,…,ng−1, 
+    // fg[1 + i] = gi(x), which is the constraints (initial state and then differences between t and t-1 for each state variable)
+
+    // Step 1: Calculate cost
+    fg[0] = 0;
+    for (int timestep = 0; timestep < N; timestep++) {
+      // Minimize position error
+      fg[0] += CppAD::pow(vars[var_index(VAR_CTE, timestep)], 2);
+      // Minimize angle error
+      fg[0] += CppAD::pow(vars[var_index(VAR_EPSI, timestep)], 2);
+      // Try to have the same speed
+      fg[0] += CppAD::pow(vars[var_index(VAR_V, timestep)] - AVG_SPEED, 2);
+      // Try to minimize difference between actuators
+      if (timestep < N - 2) { // We use N - 2 because we access the next timestep in the loop (first -1) and actuators variable vector has length N - 1 (second -1)
+        fg[0] += CppAD::pow(vars[var_index(VAR_DELTA, timestep)] - vars[var_index(VAR_DELTA, timestep + 1)], 2);
+        fg[0] += CppAD::pow(vars[var_index(VAR_A, timestep)] - vars[var_index(VAR_A, timestep + 1)], 2);
+      }
+    }
+
+    std::cout << "#1 " << fg[0] << std::endl;
+
+    // Step 2: Set up g function of constraints
+    AD<double> last[ALL_VARS.size()];
+    for (int timestep = 0; timestep < N; timestep++) {
+      for (int var : STATE_VARS) {
+        fg[1 + var_index(var, timestep)] = vars[var_index(var, timestep)];
+      }
+
+      if (timestep != 0) {
+        // Now subtract values calculated using our kinematic model
+        // x[t] = x[t-1] + v[t-1] * cos(psi[t-1]) * dt
+        // y[t] = y[t-1] + v[t-1] * sin(psi[t-1]) * dt
+        // psi[t] = psi[t-1] + v[t-1] / Lf * delta[t-1] * dt
+        // v[t] = v[t-1] + a[t-1] * dt
+        // cte[t] = f(x[t-1]) - y[t-1] + v[t-1] * sin(epsi[t-1]) * dt
+        // epsi[t] = psi[t-1] - psides[t-1] + v[t-1] * delta[t-1] / Lf * dt
+        fg[1 + var_index(VAR_X, timestep)] -= last[VAR_X] + last[VAR_V] * CppAD::cos(last[VAR_PSI]) * dt;
+        fg[1 + var_index(VAR_Y, timestep)] -= last[VAR_Y] + last[VAR_V] * CppAD::sin(last[VAR_PSI]) * dt;
+        fg[1 + var_index(VAR_PSI, timestep)] -= last[VAR_PSI] + last[VAR_V] / Lf * CppAD::cos(last[VAR_DELTA]) * dt;
+        fg[1 + var_index(VAR_V, timestep)] -= last[VAR_V] + last[VAR_A] * dt;
+
+        // Calculate f and its derivative
+        AD<double> f_last = coeffs[0];
+        f_last += coeffs[1] * last[VAR_X];
+        f_last += coeffs[2] * CppAD::pow(last[VAR_X], 2);
+        f_last += coeffs[3] * CppAD::pow(last[VAR_X], 3);
+        AD<double> psides_last = coeffs[1];
+        psides_last += coeffs[2] * last[VAR_X] * 2;
+        psides_last += coeffs[3] * CppAD::pow(last[VAR_X], 2) * 3;
+
+        fg[1 + var_index(VAR_CTE)] -= f_last - last[VAR_Y] + last[VAR_V] * CppAD::sin(last[VAR_PSI]) * dt;
+        fg[1 + var_index(VAR_EPSI)] -= last[VAR_PSI] - psides_last + last[VAR_V] * last[VAR_DELTA] / Lf * dt;
+      }
+
+      if (timestep < N - 1) {
+        for (int var : ALL_VARS) {
+          last[var] = vars[var_index(var, timestep)];
+        }
+      }
+    }
+    std::cout << "#9" << std::endl;
   }
 };
 
@@ -52,9 +141,11 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   // element vector and there are 10 timesteps. The number of variables is:
   //
   // 4 * 10 + 2 * 9
-  size_t n_vars = 0;
+  size_t n_vars = N * 6 + (N - 1) * 2;
   // TODO: Set the number of constraints
-  size_t n_constraints = 0;
+  size_t n_constraints = N * 6;
+
+  std::cout << "1" << std::endl;
 
   // Initial value of the independent variables.
   // SHOULD BE 0 besides initial state.
@@ -62,10 +153,25 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   for (int i = 0; i < n_vars; i++) {
     vars[i] = 0;
   }
+  for (int i = 0; i < state.size(); i++) {
+    vars[var_index(i)] = state[i];
+  }
 
   Dvector vars_lowerbound(n_vars);
   Dvector vars_upperbound(n_vars);
   // TODO: Set lower and upper limits for variables.
+  for (int timestep = 0; timestep < N; timestep++) {
+    for (int var : STATE_VARS) {
+      vars_lowerbound[var_index(var, timestep)] = -numeric_limits<double>::max();
+      vars_upperbound[var_index(var, timestep)] = numeric_limits<double>::max();
+    }
+    if (timestep < N - 1) {
+      vars_lowerbound[var_index(VAR_DELTA, timestep)] = -1;
+      vars_upperbound[var_index(VAR_DELTA, timestep)] = 1;
+      vars_lowerbound[var_index(VAR_A, timestep)] = -1;
+      vars_upperbound[var_index(VAR_A, timestep)] = 1;
+    }
+  }
 
   // Lower and upper limits for the constraints
   // Should be 0 besides initial state.
@@ -74,6 +180,11 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   for (int i = 0; i < n_constraints; i++) {
     constraints_lowerbound[i] = 0;
     constraints_upperbound[i] = 0;
+  }
+
+  for (int i = 0; i < state.size(); i++) {
+    constraints_lowerbound[var_index(i, 0)] = state[i];
+    constraints_upperbound[var_index(i, 0)] = state[i];
   }
 
   // object that computes objective and constraints
@@ -85,7 +196,7 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   // options for IPOPT solver
   std::string options;
   // Uncomment this if you'd like more print information
-  options += "Integer print_level  0\n";
+  //options += "Integer print_level  0\n";
   // NOTE: Setting sparse to true allows the solver to take advantage
   // of sparse routines, this makes the computation MUCH FASTER. If you
   // can uncomment 1 of these and see if it makes a difference or not but
@@ -112,10 +223,13 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   auto cost = solution.obj_value;
   std::cout << "Cost " << cost << std::endl;
 
+  std::cout << "solution.len " << solution.x.size() << std::endl;
+  std::cout << "ok " << ok << std::endl;
+
   // TODO: Return the first actuator values. The variables can be accessed with
   // `solution.x[i]`.
   //
   // {...} is shorthand for creating a vector, so auto x1 = {1.0,2.0}
   // creates a 2 element double vector.
-  return {};
+  return { solution.x[var_index(VAR_DELTA, 0)], solution.x[var_index(VAR_A, 0)] };
 }
