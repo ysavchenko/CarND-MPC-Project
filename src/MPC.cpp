@@ -108,6 +108,7 @@ class FG_eval {
         AD<double> psides_last = coeffs[1];
         psides_last += coeffs[2] * last[VAR_X] * 2;
         psides_last += coeffs[3] * CppAD::pow(last[VAR_X], 2) * 3;
+        psides_last = CppAD::atan(psides_last);
 
         fg[1 + var_index(VAR_CTE)] -= f_last - last[VAR_Y] + last[VAR_V] * CppAD::sin(last[VAR_PSI]) * dt;
         fg[1 + var_index(VAR_EPSI)] -= last[VAR_PSI] - psides_last + last[VAR_V] * last[VAR_DELTA] / Lf * dt;
