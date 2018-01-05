@@ -16,13 +16,12 @@ const int VAR_A = 7;
 std::vector<int> STATE_VARS = { VAR_X, VAR_Y, VAR_PSI, VAR_V, VAR_CTE, VAR_EPSI };
 std::vector<int> ALL_VARS = { VAR_X, VAR_Y, VAR_PSI, VAR_V, VAR_CTE, VAR_EPSI, VAR_DELTA, VAR_A };
 
-const double MAX_SPEED = 100;
-const double AVG_SPEED = 30;
+const double AVG_SPEED = 15;
 const double MAX_STEERING = 25. * M_PI / 180.;
 
 // TODO: Set the timestep length and duration
 size_t N = 10;
-double dt = 0.1;
+double dt = 0.3;
 
 // Return index of particular variable in array
 int var_index(int type, int timestep) {
@@ -54,11 +53,7 @@ class FG_eval {
 
   typedef CPPAD_TESTVECTOR(AD<double>) ADvector;
   void operator()(ADvector& fg, const ADvector& vars) {
-    // TODO: implement MPC
-    // `fg` a vector of the cost constraints, `vars` is a vector of variable values (state & actuators)
-    // NOTE: You'll probably go back and forth between this function and
-    // the Solver function below.
-
+    
     // Now we'll fill fg vector. It should contain the following:
     // fg[0] = f(x), which is the function we're uptimizing (cost)
     // and for i=0,…,ng−1, 
@@ -68,19 +63,22 @@ class FG_eval {
     fg[0] = 0;
     for (int timestep = 0; timestep < N; timestep++) {
       // Minimize position error
-      fg[0] += CppAD::pow(vars[var_index(VAR_CTE, timestep)], 2);
+      fg[0] += CppAD::pow(vars[var_index(VAR_CTE, timestep)], 2) * 1000;
       // Minimize angle error
       fg[0] += CppAD::pow(vars[var_index(VAR_EPSI, timestep)], 2);
       // Try to have the same speed
       fg[0] += CppAD::pow(vars[var_index(VAR_V, timestep)] - AVG_SPEED, 2);
+      // Try to minimize use of actuators
+      if (timestep < N - 1) {
+        fg[0] += CppAD::pow(vars[var_index(VAR_DELTA, timestep)], 2);
+        fg[0] += CppAD::pow(vars[var_index(VAR_A, timestep)], 2);
+      }
       // Try to minimize difference between actuators
       if (timestep < N - 2) { // We use N - 2 because we access the next timestep in the loop (first -1) and actuators variable vector has length N - 1 (second -1)
         fg[0] += CppAD::pow(vars[var_index(VAR_DELTA, timestep)] - vars[var_index(VAR_DELTA, timestep + 1)], 2);
         fg[0] += CppAD::pow(vars[var_index(VAR_A, timestep)] - vars[var_index(VAR_A, timestep + 1)], 2);
       }
     }
-
-    std::cout << "#1 " << fg[0] << std::endl;
 
     // Step 2: Set up g function of constraints
     AD<double> last[ALL_VARS.size()];
@@ -99,7 +97,7 @@ class FG_eval {
         // epsi[t] = psi[t-1] - psides[t-1] + v[t-1] * delta[t-1] / Lf * dt
         fg[1 + var_index(VAR_X, timestep)] -= last[VAR_X] + last[VAR_V] * CppAD::cos(last[VAR_PSI]) * dt;
         fg[1 + var_index(VAR_Y, timestep)] -= last[VAR_Y] + last[VAR_V] * CppAD::sin(last[VAR_PSI]) * dt;
-        fg[1 + var_index(VAR_PSI, timestep)] -= last[VAR_PSI] + last[VAR_V] / Lf * CppAD::cos(last[VAR_DELTA]) * dt;
+        fg[1 + var_index(VAR_PSI, timestep)] -= last[VAR_PSI] + last[VAR_V] / Lf * last[VAR_DELTA] * dt;
         fg[1 + var_index(VAR_V, timestep)] -= last[VAR_V] + last[VAR_A] * dt;
 
         // Calculate f and its derivative
@@ -121,7 +119,6 @@ class FG_eval {
         }
       }
     }
-    std::cout << "#9" << std::endl;
   }
 };
 
@@ -131,21 +128,17 @@ class FG_eval {
 MPC::MPC() {}
 MPC::~MPC() {}
 
-vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
+const int STATE_SIZE = 6;
+const int ACTUATORS_SIZE = 2;
+
+vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs, std::vector<double> &mpc_x_vals, std::vector<double> &mpc_y_vals) {
   bool ok = true;
-  size_t i;
   typedef CPPAD_TESTVECTOR(double) Dvector;
 
-  // TODO: Set the number of model variables (includes both states and inputs).
-  // For example: If the state is a 4 element vector, the actuators is a 2
-  // element vector and there are 10 timesteps. The number of variables is:
-  //
-  // 4 * 10 + 2 * 9
-  size_t n_vars = N * 6 + (N - 1) * 2;
+  // Set the number of model variables (includes both states and inputs).
+  size_t n_vars = N * STATE_SIZE + (N - 1) * ACTUATORS_SIZE;
   // TODO: Set the number of constraints
-  size_t n_constraints = N * 6;
-
-  std::cout << "1" << std::endl;
+  size_t n_constraints = N * STATE_SIZE;
 
   // Initial value of the independent variables.
   // SHOULD BE 0 besides initial state.
@@ -159,15 +152,15 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
 
   Dvector vars_lowerbound(n_vars);
   Dvector vars_upperbound(n_vars);
-  // TODO: Set lower and upper limits for variables.
+  // Set lower and upper limits for variables.
   for (int timestep = 0; timestep < N; timestep++) {
     for (int var : STATE_VARS) {
       vars_lowerbound[var_index(var, timestep)] = -numeric_limits<double>::max();
       vars_upperbound[var_index(var, timestep)] = numeric_limits<double>::max();
     }
     if (timestep < N - 1) {
-      vars_lowerbound[var_index(VAR_DELTA, timestep)] = -1;
-      vars_upperbound[var_index(VAR_DELTA, timestep)] = 1;
+      vars_lowerbound[var_index(VAR_DELTA, timestep)] = -MAX_STEERING;
+      vars_upperbound[var_index(VAR_DELTA, timestep)] = MAX_STEERING;
       vars_lowerbound[var_index(VAR_A, timestep)] = -1;
       vars_upperbound[var_index(VAR_A, timestep)] = 1;
     }
@@ -196,12 +189,13 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   // options for IPOPT solver
   std::string options;
   // Uncomment this if you'd like more print information
-  //options += "Integer print_level  0\n";
+  options += "Integer print_level  0\n";
   // NOTE: Setting sparse to true allows the solver to take advantage
   // of sparse routines, this makes the computation MUCH FASTER. If you
   // can uncomment 1 of these and see if it makes a difference or not but
   // if you uncomment both the computation time should go up in orders of
   // magnitude.
+  //options += "String  linear_solver mumps\n";
   options += "Sparse  true        forward\n";
   options += "Sparse  true        reverse\n";
   // NOTE: Currently the solver has a maximum time limit of 0.5 seconds.
@@ -223,13 +217,19 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   auto cost = solution.obj_value;
   std::cout << "Cost " << cost << std::endl;
 
-  std::cout << "solution.len " << solution.x.size() << std::endl;
-  std::cout << "ok " << ok << std::endl;
+  // Fill predicted position vectors
+  for (int timestep = 0; timestep < N; timestep++) {
+    mpc_x_vals.push_back(solution.x[var_index(VAR_X, timestep)]);
+    mpc_y_vals.push_back(solution.x[var_index(VAR_Y, timestep)]);
+  }
 
-  // TODO: Return the first actuator values. The variables can be accessed with
-  // `solution.x[i]`.
-  //
-  // {...} is shorthand for creating a vector, so auto x1 = {1.0,2.0}
-  // creates a 2 element double vector.
+  // Return the first actuator values. The variables can be accessed with
   return { solution.x[var_index(VAR_DELTA, 0)], solution.x[var_index(VAR_A, 0)] };
+}
+
+void MPC::ApplyLatency(double &px, double &py, double& psi, double& v, double steering, double throttle, double latency) {
+  px += v * cos(psi) * latency;
+  py += v * sin(psi) * latency;
+  psi += v * steering / Lf * latency;
+  v += throttle * latency;
 }

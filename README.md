@@ -1,108 +1,89 @@
-# CarND-Controls-MPC
+# MPC Project
 Self-Driving Car Engineer Nanodegree Program
 
 ---
 
-## Dependencies
+This project uses model predictive control to guide vehicle on the test track.
 
-* cmake >= 3.5
- * All OSes: [click here for installation instructions](https://cmake.org/install/)
-* make >= 4.1(mac, linux), 3.81(Windows)
-  * Linux: make is installed by default on most Linux distros
-  * Mac: [install Xcode command line tools to get make](https://developer.apple.com/xcode/features/)
-  * Windows: [Click here for installation instructions](http://gnuwin32.sourceforge.net/packages/make.htm)
-* gcc/g++ >= 5.4
-  * Linux: gcc / g++ is installed by default on most Linux distros
-  * Mac: same deal as make - [install Xcode command line tools]((https://developer.apple.com/xcode/features/)
-  * Windows: recommend using [MinGW](http://www.mingw.org/)
-* [uWebSockets](https://github.com/uWebSockets/uWebSockets)
-  * Run either `install-mac.sh` or `install-ubuntu.sh`.
-  * If you install from source, checkout to commit `e94b6e1`, i.e.
-    ```
-    git clone https://github.com/uWebSockets/uWebSockets
-    cd uWebSockets
-    git checkout e94b6e1
-    ```
-    Some function signatures have changed in v0.14.x. See [this PR](https://github.com/udacity/CarND-MPC-Project/pull/3) for more details.
+## Dependencies & Build Instructions
 
-* **Ipopt and CppAD:** Please refer to [this document](https://github.com/udacity/CarND-MPC-Project/blob/master/install_Ipopt_CppAD.md) for installation instructions.
-* [Eigen](http://eigen.tuxfamily.org/index.php?title=Main_Page). This is already part of the repo so you shouldn't have to worry about it.
-* Simulator. You can download these from the [releases tab](https://github.com/udacity/self-driving-car-sim/releases).
-* Not a dependency but read the [DATA.md](./DATA.md) for a description of the data sent back from the simulator.
+You can see detailed information on dependencies installation and build instructions in parent repository [here](https://github.com/udacity/CarND-MPC-Project).
 
+## Ipopt Installation on Mac
 
-## Basic Build Instructions
+Since homebrew/science repository is deprecated from January first I've made a fork of it and reversed the latest commits. So if you're installing Ipopt on Mac please use this command to get its homebrew formula:
 
-1. Clone this repo.
-2. Make a build directory: `mkdir build && cd build`
-3. Compile: `cmake .. && make`
-4. Run it: `./mpc`.
+```
+brew tap ysavchenko/science
+```
 
-## Tips
+## Write Up
 
-1. It's recommended to test the MPC on basic examples to see if your implementation behaves as desired. One possible example
-is the vehicle starting offset of a straight line (reference). If the MPC implementation is correct, after some number of timesteps
-(not too many) it should find and track the reference line.
-2. The `lake_track_waypoints.csv` file has the waypoints of the lake track. You could use this to fit polynomials and points and see of how well your model tracks curve. NOTE: This file might be not completely in sync with the simulator so your solution should NOT depend on it.
-3. For visualization this C++ [matplotlib wrapper](https://github.com/lava/matplotlib-cpp) could be helpful.)
-4.  Tips for setting up your environment are available [here](https://classroom.udacity.com/nanodegrees/nd013/parts/40f38239-66b6-46ec-ae68-03afd8a601c8/modules/0949fca6-b379-42af-a919-ee50aa304e6a/lessons/f758c44c-5e40-4e01-93b5-1a82aa4e044f/concepts/23d376c7-0195-4276-bdf0-e02f1f3c665d)
-5. **VM Latency:** Some students have reported differences in behavior using VM's ostensibly a result of latency.  Please let us know if issues arise as a result of a VM environment.
+### The Model
 
-## Editor Settings
+We use kinematic movement model—a simple movement model which takes into consideration vehicle position, speed and orientation angle and has two actuators for changing the state: steering (orientation angle change rate) and throttle (speed change rate).
 
-We've purposefully kept editor configuration files out of this repo in order to
-keep it as simple and environment agnostic as possible. However, we recommend
-using the following settings:
+So basic state has 4 variables, but we add 2 more: position error and orientation angle error. They will be the first considered for our cost function (both should be zero).
 
-* indent using spaces
-* set tab width to 2 spaces (keeps the matrices in source code aligned)
+The model is described by the state update equations (where each consecutive state is derived from the previous one). You can see the equations for each state variable below:
 
-## Code Style
+![](images/model.gif)
 
-Please (do your best to) stick to [Google's C++ style guide](https://google.github.io/styleguide/cppguide.html).
+Where `x` and `y` is position, `v` is speed, `φ` is orientation angle, `δ` is orientation angle change rate (steering), `a` is acceleration (throttle), `cte` is position error and `eφ` is orientation error.
 
-## Project Instructions and Rubric
+These equations also use `Lt` constant which depends on vehicle geomerty (the larger the constant the slower vehicle is turning), and function `f` is function of the path vehicle is supposed to be following. And `Δt` is time difference between timesteps.
 
-Note: regardless of the changes you make, your project must be buildable using
-cmake and make!
+### The Algorithm
 
-More information is only accessible by people who are already enrolled in Term 2
-of CarND. If you are enrolled, see [the project page](https://classroom.udacity.com/nanodegrees/nd013/parts/40f38239-66b6-46ec-ae68-03afd8a601c8/modules/f1820894-8322-4bb3-81aa-b26b3c6dcbaf/lessons/b1ff3be0-c904-438e-aad3-2b5379f0e0c3/concepts/1a2255a0-e23c-44cf-8d41-39b8a3c8264a)
-for instructions and the project rubric.
+Input of the algorithm is the current vehicle position, waypoints of the path it shoud be on, current speed and orientation angle. And the output should be throttle and steering values.
 
-## Hints!
+Below you can see the major points of the algorithm we're using:
 
-* You don't have to follow this directory structure, but if you do, your work
-  will span all of the .cpp files here. Keep an eye out for TODOs.
+- Estimate function from vehicle waypoints (we use 3-rd degree polynomial)
+- Initialize current model state (current vehicle position, speed and angle, use estimated path function to get position and orientation errors)
+- Formulate and solve linear optimization problem: 
+	- Set up variables, which are vehicle state for N steps in the future and actuators for N-1 steps in the future (we do not need step N for actuators because it will affect state N+1 which we do not have in our variables)
+	- Set up cost function which will be minimized: it will include position and orientation errors, difference between current and reference speed, absolute actuator values and difference between actuator values on each time step (to penalize erratic vehicle movement)
+	- Set up restrictions for each variable using kinematic model equations above
+- Return back actuator values (throttle and steering) from the solution (for the first timestep)
 
-## Call for IDE Profiles Pull Requests
+### Choosing `N` and `Δt`
 
-Help your fellow students!
+Some of the metaparameters for MPC are `N` and `Δt`: number of time intervals to model and interval between those intervals.
 
-We decided to create Makefiles with cmake to keep this project as platform
-agnostic as possible. Similarly, we omitted IDE profiles in order to we ensure
-that students don't feel pressured to use one IDE or another.
+Initially I chose `10` intervals with `0.1` seconds interval. After running some tests I noticed that green line (representing the modelled trajectory) is much shorter than yellow line (trajectory supplied by the system). This means that our model did not use much of the information provided by the system. Also `0.1` second delay was too close (exctly the same) as model latency (more on it later), so I've decided to increase time interval to `0.2` which changed modelled interval to 2 seconds which almose always matched the length of the waypoints for the vehicle provided by the system.
 
-However! I'd love to help people get up and running with their IDEs of choice.
-If you've created a profile for an IDE that you think other students would
-appreciate, we'd love to have you add the requisite profile files and
-instructions to ide_profiles/. For example if you wanted to add a VS Code
-profile, you'd add:
+**UPDATE:** Final interval is `0.3` seconds to make it work better on lower speeds. During testing the speed was `25` meters per second and final submitted code has `15` meters per second to make sure MPC implementation works without delays on any test platform.
 
-* /ide_profiles/vscode/.vscode
-* /ide_profiles/vscode/README.md
+### Polynomial Fitting and MPC Preprocessing
 
-The README should explain what the profile does, how to take advantage of it,
-and how to install it.
+Our model works in vehicle coordinate system and waypoits from the simulator are in global coordinate system. So the first step was to convert those waypoints to local coordinates.
 
-Frankly, I've never been involved in a project with multiple IDE profiles
-before. I believe the best way to handle this would be to keep them out of the
-repo root to avoid clutter. My expectation is that most profiles will include
-instructions to copy files to a new location to get picked up by the IDE, but
-that's just a guess.
+Then I used `polyfit` function to fit 3-rd degree polynomial (as suggested by the learning materials) to these points. Coefficients from this polinomial later will be transferred to MPC model (they are used to estimate position and angle errors).
 
-One last note here: regardless of the IDE used, every submitted project must
-still be compilable with cmake and make./
+Then we have to assemble initial state vector. Position and angle of this vector will be zero (because we're using vehicle coordinates). Speed will be current vehicle speed and now we have to calculate initial position and angle errors. And we can do this by using formulas from the model:
 
-## How to write a README
-A well written README file can enhance your project and portfolio.  Develop your abilities to create professional README files by completing [this free course](https://www.udacity.com/course/writing-readmes--ud777).
+![](images/initial_errors.gif)
+
+Because initial `x`, `y` and `φ` values are zero we can just use the first and second polynomial coefficient values for those errors. 
+
+### Dealing with Latency
+
+To incorporate latency into the model we must consider the fact that even though we calculate steering and throttle immediately they will only be applied after a particular delay (`100ms`). This means that the car will contunue using current throttle and steering for the interval of this delay.
+
+To adjust our model for such latency, before we prepare data for MPC we predict model position, angle and speed using current throttle and steering (using the same kinematic model MPC uses). It is done in `MPC::ApplyLatency` method in the code. Then we treat these values as before: transforming coordinates, fitting polynomial, calculating errors etc.
+
+### Further Tuning
+
+I've also done some more tuning before the model would drive vehicle efficiently on the track:
+
+- Converting speed from miles-per-hour to meters-per-second. The speed is reported in mph, but it appears the coordinates and `Lf` is based on meters. So the speed has to be converted before applying latency to the current values
+- Not using the model until speed reaches some minimum speed. Because we're using constant `N` and `Δt` we have to make sure that predicted time interval is similar to the waypoints reported by the system. And on low speeds predicted interval is much shorter so the model does not work efficiently. Quick fix was to return constant steering and throttle if speed is lower than some minimum value (`5` meters per second in final version)
+- Adjusting cost function. Initial version of the cost function simply added penalizing factors without weighting them. This caused vehicle to move around the track a lot (and sometimes falling off the track, especially on high speeds). So I've started adding weights (in x10 orders of magnitude) to position error component. After reaching `1000` vehicle started following path much better, so I've stopped weights tuning at this point.
+
+### Driving Video
+
+Below is a screen capture for driving at `25` meters per hour target speed with `10` of `0.2` intervals in MPC model (final code has lower speed and longer intervals to make ensure model performance on slower platforms).
+
+[![](https://img.youtube.com/vi/VW-QnK-x1v0/0.jpg)](https://www.youtube.com/watch?v=VW-QnK-x1v0)
+

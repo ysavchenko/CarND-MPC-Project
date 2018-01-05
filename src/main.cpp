@@ -72,22 +72,13 @@ Eigen::VectorXd to_eigen(vector<double> vec) {
   return eigen;
 }
 
-void GlobalToCar(vector<double>& ptsx,
-                 vector<double>& ptsy,
-                 double xshift,
-                 double yshift,
-                 double psi)
-{
-  // This is based on driveWell's post at:
-  // https://discussions.udacity.com/t/not-able-to-display-trajectory-and-reference-paths-in-the-simulator/248545/9
-  for (size_t i = 0; i < ptsx.size(); ++i)
-  {
-    const double& x = ptsx[i];
-    const double& y = ptsy[i];
+void global_to_local(vector<double>& ptsx, vector<double>& ptsy,
+                 double local_x, double local_y, double psi) {
+  for (size_t i = 0; i < ptsx.size(); i++) {
     double cospsi = cos(psi);
     double sinpsi = sin(psi);
-    double xtrans = x - xshift;
-    double ytrans = y - yshift;
+    double xtrans = ptsx[i] - local_x;
+    double ytrans = ptsy[i] - local_y;
     double xnew = xtrans * cospsi + ytrans * sinpsi;
     double ynew = -xtrans * sinpsi + ytrans * cospsi;
 
@@ -123,55 +114,58 @@ int main() {
           double psi = j[1]["psi"];
           double v = j[1]["speed"];
 
-          GlobalToCar(ptsx, ptsy, px, py, psi);
-
-          Eigen::VectorXd poly = polyfit(to_eigen(ptsx), to_eigen(ptsy), 3);
-
-          double epsi = -atan(poly[1]);
-
-          // Car position is 0, 0, so position error is polynom evaluation at point 0
-          double cte = polyeval(poly, 0);
-
-          /*
-          * TODO: Calculate steering angle and throttle using MPC.
-          *
-          * Both are in between [-1, 1].
-          *
-          */
-
-          Eigen::VectorXd state(6);
-          state << 0, 0, 0, v, cte, epsi;
-
-          std::cout << "State " << state << std::endl;
-          std::cout << "Poly " << poly << std::endl;
-
-          auto actuators = mpc.Solve(state, poly);
-
-          double steer_value = actuators[0];
-          double throttle_value = actuators[1];
+          // Convert speed to meters per second
+          v /= 2.23694;
 
           json msgJson;
-          // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
-          // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
-          msgJson["steering_angle"] = steer_value;
-          msgJson["throttle"] = throttle_value;
 
-          //Display the MPC predicted trajectory 
           vector<double> mpc_x_vals;
           vector<double> mpc_y_vals;
-
-          //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
-          // the points in the simulator are connected by a Green line
-
-          msgJson["mpc_x"] = mpc_x_vals;
-          msgJson["mpc_y"] = mpc_y_vals;
-
-          //Display the waypoints/reference line
           vector<double> next_x_vals;
           vector<double> next_y_vals;
 
-          //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
-          // the points in the simulator are connected by a Yellow line
+          if (v < 5) {
+            msgJson["steering_angle"] = 0;
+            msgJson["throttle"] = 1;
+          } else {
+            // Use existing vehicle orientation and acceleration to predict its speed, angle and location after latency timeout
+            double current_steering = j[1]["steering_angle"];
+            current_steering = -current_steering;
+            double current_throttle = j[1]["throttle"];
+
+            cout << "Before latency: " << px << ", " << py << ", " << psi << ", " << v << endl;
+            MPC::ApplyLatency(px, py, psi, v, current_steering, current_throttle, .1);
+            cout << "After latency: " << px << ", " << py << ", " << psi << ", " << v << endl;
+
+            global_to_local(ptsx, ptsy, px, py, psi);
+
+            Eigen::VectorXd poly = polyfit(to_eigen(ptsx), to_eigen(ptsy), 3);
+
+            double epsi = -atan(poly[1]);
+            double cte = -poly[0];
+
+            // Calculate steering angle and throttle using MPC.
+
+            Eigen::VectorXd state(6);
+            state << 0, 0, 0, v, cte, epsi;
+
+            auto actuators = mpc.Solve(state, poly, mpc_x_vals, mpc_y_vals);
+
+            double steer_value = - actuators[0] / deg2rad(25);
+            double throttle_value = actuators[1];
+
+            // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
+            // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
+            msgJson["steering_angle"] = steer_value;
+            msgJson["throttle"] = throttle_value;
+
+            //Display the waypoints/reference line
+            next_x_vals.insert(next_x_vals.end(), ptsx.begin(), ptsx.end());
+            next_y_vals.insert(next_y_vals.end(), ptsy.begin(), ptsy.end());
+          }
+
+          msgJson["mpc_x"] = mpc_x_vals;
+          msgJson["mpc_y"] = mpc_y_vals;
 
           msgJson["next_x"] = next_x_vals;
           msgJson["next_y"] = next_y_vals;
