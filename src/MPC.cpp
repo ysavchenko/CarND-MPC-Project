@@ -20,8 +20,8 @@ const double AVG_SPEED = 15;
 const double MAX_STEERING = 25. * M_PI / 180.;
 
 // TODO: Set the timestep length and duration
-size_t N = 10;
-double dt = 0.3;
+size_t N = 15;
+double dt = 0.2;
 
 // Return index of particular variable in array
 int var_index(int type, int timestep) {
